@@ -260,7 +260,8 @@ def load_all_data():
         'customers': pd.DataFrame(),
         'customers_train': pd.DataFrame(),
         'logs': pd.DataFrame(),
-        'satisfaction': pd.DataFrame()
+        'satisfaction': pd.DataFrame(),
+        'transactions': pd.DataFrame()
     }
 
     if not os.path.exists(DATA_PATH):
@@ -533,12 +534,19 @@ class ZeroShotRecommender:
                 max_score = max(max_score, ratio)
         return max_score if max_score >= threshold else 0
 
-    def recommend(self, cid, k=5):
+    def recommend(self, cid, k=5, persona_hint=None):
         if len(self.cust_df) == 0:
             return []
         cust_row = self.cust_df[self.cust_df['customer_id'] == cid]
         persona_id = 3 if cust_row.empty else int(cust_row.iloc[0].get('Persona_Cluster', 3))
         profile = self.PROFILES.get(persona_id, self.PROFILES[3])
+
+        if persona_hint:
+            normalized=normalize_persona_name(persona_hint)
+            for pid,p in self.PROFILES.items():
+                if p['name']==normalized:
+                    profile=p
+                    break
         results = []
 
         if len(self.card_df) > 0 and 'card_category' in self.card_df.columns:
@@ -606,6 +614,76 @@ class ZeroShotRecommender:
 
         return results[:k]
 
+class SpendingPattern:
+    """거래 데이터로 소비 습관을 요약하여 LLM이 교정 제안을 만들도록 돕는 유틸"""
+
+    def __init__(self, trans_df: pd.DataFrame):
+        self.df = trans_df.copy() if not trans_df.empty else pd.DataFrame()
+        if not self.df.empty:
+            try:
+                self.df['transaction_date'] = pd.to_datetime(
+                    self.df['transaction_date'], format='mixed', errors='coerce'
+                )
+            except Exception as e:
+                logger.warning(f"거래 일자 파싱 실패: {e}")
+                self.df = pd.DataFrame()
+
+    def _recent_slice(self, cid: str, months: int = 6):
+        if self.df.empty or 'customer_id' not in self.df.columns:
+            return pd.DataFrame()
+        cust_df = self.df[self.df['customer_id'] == cid]
+        if cust_df.empty:
+            return pd.DataFrame()
+        recent_cutoff = cust_df['transaction_date'].max() - pd.DateOffset(months=months)
+        return cust_df[cust_df['transaction_date'] >= recent_cutoff]
+
+    def analyze(self, cid: str, months: int = 6):
+        recent = self._recent_slice(cid, months)
+        if recent.empty:
+            return {"status": "거래 데이터 없음", "customer_id": cid}
+
+        recent = recent.copy()
+        recent['month_idx'] = recent['transaction_date'].dt.year * 12 + recent['transaction_date'].dt.month
+        monthly = recent.groupby('month_idx')['amount'].sum().reset_index()
+        trend_pct = 0.0
+        if len(monthly) > 1:
+            X = monthly['month_idx'].values.reshape(-1, 1)
+            y = monthly['amount'].values
+            mean_y = np.mean(y) if np.mean(y) != 0 else 1
+            model = LinearRegression().fit(X, y)
+            trend_pct = float(model.coef_[0] / mean_y)
+
+        weekend_ratio = 0.0
+        cafe_ratio = 0.0
+        conv_ratio = 0.0
+        if 'merchant_category' in recent.columns:
+            total_tx = len(recent)
+            weekend_ratio = float((recent['transaction_date'].dt.dayofweek >= 5).mean())
+            cat_counts = Counter(recent['merchant_category'])
+            cafe_ratio = float(cat_counts.get('식당/카페', 0) / total_tx)
+            conv_ratio = float(cat_counts.get('편의점', 0) / total_tx)
+
+        yolo_cols = ['SHC_TRAVEL_AMT_24_4', 'SHC_ENT_AMT_24_4', 'SHC_STARBUCKS_AMT_24_4',
+                     'SHC_HOTEL_AMT_24_4', 'SHC_M_DF_AMT_24_4']
+        yolo_ratio = 0.0
+        if set(yolo_cols).issubset(recent.columns):
+            yolo_sum = recent[yolo_cols].sum(axis=1)
+            total_spend = recent[yolo_cols].sum(axis=1) + recent.get('amount', 0)
+            total_nonzero = total_spend.replace(0, np.nan)
+            yolo_ratio = float((yolo_sum / total_nonzero).mean(skipna=True) or 0)
+
+        avg_ticket = float(recent['amount'].mean()) if 'amount' in recent.columns else 0.0
+
+        return {
+            "customer_id": cid,
+            "months_covered": months,
+            "trend_pct": trend_pct,
+            "weekend_ratio": weekend_ratio,
+            "cafe_ratio": cafe_ratio,
+            "conv_ratio": conv_ratio,
+            "yolo_ratio": yolo_ratio,
+            "avg_ticket": avg_ticket
+        }
 
 def run_rule_engine(profile_name, intent, card_df, dep_df):
     normalized_profile = normalize_persona_name(profile_name)
@@ -662,6 +740,8 @@ class HybridEngine:
         self.tom_df = data.get('customers_train', pd.DataFrame())
         self.card_df = data['card']
         self.dep_df = data['deposit']
+        self.transactions = data.get('transactions', pd.DataFrame())
+        self.spending_analyzer = SpendingPattern(self.transactions)
 
     def get_tom_profile(self, cid):
         if self.tom_df.empty:
@@ -680,28 +760,88 @@ class HybridEngine:
             logger.warning(f"TOM 프로필 조회 실패: {e}")
             return {"status": "조회 실패"}
 
-    def get_persona_name(self, cid):
-        if self.raw_customers.empty:
-            return "실속 스타터"
-        row = self.raw_customers[self.raw_customers['customer_id'] == cid]
-        if row.empty:
-            return "실속 스타터"
-        base = self.zero.PROFILES.get(int(row.iloc[0].get('Persona_Cluster', 3)), {}).get('name', '실속 스타터')
+    def _resolve_persona(self, cid):
+        scores = {p['name']: 0.0 for p in self.zero.PROFILES.values()}
+        reasons = {name: [] for name in scores.keys()}
+
+        # 1) 고객 클러스터 기본값 가중치
+        base_name = None
+        if not self.raw_customers.empty:
+            row = self.raw_customers[self.raw_customers['customer_id'] == cid]
+            if not row.empty:
+                base_name = self.zero.PROFILES.get(int(row.iloc[0].get('Persona_Cluster', 3)), {}).get('name')
+                if base_name:
+                    scores[base_name] += 2.5
+                    reasons[base_name].append("고객 클러스터 매칭")
+
+        # 2) TOM/Lifestyle 신호 기반 가중치
+        tom_row = None
         if not self.tom_df.empty and 'customer_id' in self.tom_df.columns:
             tom_indexed = self.tom_df.set_index('customer_id')
             if cid in tom_indexed.index:
-                t = tom_indexed.loc[cid]
-                if t.get('TOM_YOLO', 0) > 0.7:
-                    return f"스마트 플렉서 (최근 소비 급증)"
-                trend_raw = t.get('TOM_Trend_Raw', t.get('TOM_Trend', 0))
-                if trend_raw < -0.1:
-                    return f"알뜰 지킴이 (절약 모드)"
-        return base
+                tom_row = tom_indexed.loc[cid]
+                yolo = tom_row.get('TOM_YOLO', 0)
+                digital = tom_row.get('TOM_Digital', 0)
+                weekend = tom_row.get('TOM_Weekend', 0)
+                trend_raw = tom_row.get('TOM_Trend_Raw', tom_row.get('TOM_Trend', 0))
+                age = tom_row.get('AGE')
+
+                if yolo >= 0.6 or (weekend > 0.5 and trend_raw > 0):
+                    scores['스마트 플렉서'] += 2.0
+                    reasons['스마트 플렉서'].append("YOLO/주말 소비 비중 높음")
+                if digital >= 0.6:
+                    scores['디지털 힙스터'] += 2.0
+                    reasons['디지털 힙스터'].append("디지털·온라인 소비 높음")
+                if trend_raw < -0.1 or (yolo < 0.3 and weekend < 0.35):
+                    scores['알뜰 지킴이'] += 1.8
+                    reasons['알뜰 지킴이'].append("절약/소비 안정 패턴")
+                if age is not None and age < 0.35:
+                    scores['실속 스타터'] += 1.2
+                    reasons['실속 스타터'].append("청년/입문 고객")
+                if 0.3 <= yolo <= 0.6 and 0.3 <= weekend <= 0.55 and trend_raw > -0.1:
+                    scores['밸런스 메인스트림'] += 1.5
+                    reasons['밸런스 메인스트림'].append("균형 잡힌 소비")
+
+                # 3) 거래 데이터 기반 추가 보정
+            analysis = self.spending_analyzer.analyze(cid, months=6)
+            if isinstance(analysis, dict) and not analysis.get('status'):
+                weekend_ratio = analysis.get('weekend_ratio', 0)
+                yolo_ratio = analysis.get('yolo_ratio', 0)
+                conv_ratio = analysis.get('conv_ratio', 0)
+                avg_ticket = analysis.get('avg_ticket', 0)
+
+                if yolo_ratio >= 0.35 or (weekend_ratio > 0.55 and avg_ticket > 40000):
+                    scores['스마트 플렉서'] += 1.5
+                    reasons['스마트 플렉서'].append("최근 여가/고가 결제 비중")
+                if conv_ratio > 0.25 and avg_ticket < 20000:
+                    scores['알뜰 지킴이'] += 1.0
+                    reasons['알뜰 지킴이'].append("소액·편의점 중심")
+                if 0.25 < weekend_ratio < 0.55 and avg_ticket < 40000:
+                    scores['밸런스 메인스트림'] += 0.8
+                    reasons['밸런스 메인스트림'].append("중립적 소비 패턴")
+
+            # 점수가 모두 0인 경우 대비 기본값 가산
+            if all(v == 0 for v in scores.values()):
+                fallback = base_name or '밸런스 메인스트림'
+                scores[fallback] += 0.5
+
+            best_name = max(scores.items(), key=lambda x: x[1])[0]
+            best_reason = ", ".join(reasons.get(best_name, []))
+            return best_name, best_reason
+
+        def get_persona_name(self, cid):
+            persona, reason = self._resolve_persona(cid)
+            return f"{persona} ({reason})" if reason else persona
+
+        def analyze_spending(self, cid, months=6):
+            return self.spending_analyzer.analyze(cid, months)
 
     def recommend(self, cid, k=3):
         """기존 회원용 하이브리드 추천"""
         if self.zero.is_cold(cid):
-            return {'recs': self.zero.recommend(cid, k), 'is_cold': True, 'ctx': {'log_sum': "신규 고객 - 기본 페르소나 기반 추천"}}
+            persona_hint, _ = self._resolve_persona(cid)
+            return {'recs': self.zero.recommend(cid, k, persona_hint=persona_hint), 'is_cold': True,
+                    'ctx': {'log_sum': f"신규 고객 - '{persona_hint}' 페르소나 기반 추천"}}
         similar = self.knn.get_similar(cid)
         log_recs = self.log.recommend(cid, k=10)
         sat_recs = self.sat.recommend(cid, similar, k=10)
@@ -762,7 +902,8 @@ def validate_tool_args(fn_name, args):
         'run_hybrid': lambda a: 'cid' in a and isinstance(a.get('cid'), str),
         'run_rule': lambda a: 'profile' in a and 'intent' in a,
         'get_details': lambda a: 'pids' in a and isinstance(a.get('pids'), (list, str)),
-        'search_info': lambda a: 'query' in a and isinstance(a.get('query'), str)
+        'search_info': lambda a: 'query' in a and isinstance(a.get('query'), str),
+        'analyze_spending': lambda a: 'cid' in a
     }
     validator = validators.get(fn_name)
     if validator is None:
@@ -793,6 +934,13 @@ def run_rule(profile, intent):
         logger.error(f"룰 기반 추천 실패: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
+def analyze_spending_tool(cid, months=6):
+    try:
+        result = engine.analyze_spending(cid, months)
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"소비 패턴 분석 실패: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 def get_details(pids):
     try:
@@ -824,6 +972,16 @@ def search_info(query):
         logger.error(f"검색 실패: {e}")
         return f"검색 실패: {e}"
 
+def format_spending_insight(cid):
+    analysis = engine.analyze_spending(cid)
+    if not isinstance(analysis, dict) or analysis.get('status'):
+        return analysis.get('status', '소비 데이터 없음') if isinstance(analysis, dict) else '소비 데이터 없음'
+    return (
+        f"최근 {analysis['months_covered']}개월 소비 요약: "
+        f"추세 {analysis['trend_pct']:.1%}, 주말 비중 {analysis['weekend_ratio']:.0%}, "
+        f"카페 {analysis['cafe_ratio']:.0%}, 편의점 {analysis['conv_ratio']:.0%}, "
+        f"YOLO 비중 {analysis['yolo_ratio']:.0%}, 평균 결제액 {analysis['avg_ticket']:.0f}원"
+    )
 
 def run_agent(user_input, user_mode, cid=None, persona=None):
     """
@@ -840,14 +998,18 @@ def run_agent(user_input, user_mode, cid=None, persona=None):
         analyzed_persona = engine.get_persona_name(cid)
         tom_info = engine.get_tom_profile(cid)
         log_summary = engine.log.summary(cid)
-        tom_insight = f"(TOM지표: {json.dumps(tom_info, ensure_ascii=False)})\n[최근 행동 로그]: {log_summary}"
+        spending_insight = format_spending_insight(cid)
+        tom_insight = (f"(TOM지표: {json.dumps(tom_info, ensure_ascii=False)})\n"
+                       f"[최근 행동 로그]: {log_summary}\n[소비 패턴]: {spending_insight}")
         context_type = "기존 회원"
-        tool_instruction = "반드시 `run_hybrid` 도구를 사용하여 개인화된 추천을 제공하세요."
+        tool_instruction = ("반드시 `run_hybrid` 도구로 개인화 추천을 제공하고, `analyze_spending` 결과를 참고하여 "
+                            "소비 습관 교정 팁(예산 상한, 자동이체, 카테고리 절약)을 2~3개 제시하세요.")
     else:
-        analyzed_persona = persona or "실속 스타터"
+        analyzed_persona = normalize_persona_name(persona) if persona else "실속 스타터"
         tom_insight = "(비회원 - 페르소나 기반 추천)"
         context_type = "비회원/신규"
-        tool_instruction = "반드시 `run_rule` 도구를 사용하여 페르소나 기반 추천을 제공하세요."
+        tool_instruction = ("반드시 `run_rule` 도구를 사용하여 페르소나 기반 추천을 제공하고, "
+                            "사용자의 소비 목표/버릇을 묻고 교정 팁을 함께 제시하세요.")
 
     sys_msg = f"""
 # Role: 금융 AI 파트너 'FirstFin'
@@ -862,8 +1024,9 @@ def run_agent(user_input, user_mode, cid=None, persona=None):
 1. {tool_instruction}
 2. 추천 상품은 반드시 `get_details`로 혜택 확인 후 설명
 3. 허위 혜택 절대 금지, Tool 결과만 사용
-4. 친근하고 전문적인 톤, 이모지 적절히 사용
-5. 사회초년생 눈높이에 맞춰 쉽게 설명
+4. 소비 습관 교정 섹션을 별도로 작성 (예산 한도, 주말/카테고리 절약 팁 포함)
+5. 친근하고 전문적인 톤, 이모지 적절히 사용
+6. 사회초년생 눈높이에 맞춰 쉽게 설명
 """
 
     msgs = [{"role": "system", "content": sys_msg}]
@@ -885,6 +1048,11 @@ def run_agent(user_input, user_mode, cid=None, persona=None):
                                                                                           "intent": {"type": "string",
                                                                                                      "description": "사용자 의도"}},
                                                          "required": ["profile", "intent"]}}},
+        {"type": "function", "function": {"name": "analyze_spending", "description": "고객 소비 패턴 분석 (주말/카페 비중, 추세)",
+                                          "parameters": {"type": "object", "properties": {
+                                              "cid": {"type": "string", "description": "고객 ID"},
+                                              "months": {"type": "integer", "description": "분석 개월 수", "default": 6}
+                                          }, "required": ["cid"]}}},
         {"type": "function", "function": {"name": "get_details", "description": "상품 ID로 상세 혜택 조회",
                                           "parameters": {"type": "object", "properties": {
                                               "pids": {"type": "array", "items": {"type": "string"}}},
@@ -923,6 +1091,8 @@ def run_agent(user_input, user_mode, cid=None, persona=None):
             elif fn == "run_rule":
                 # 비회원용
                 result = run_rule(args.get('profile') or analyzed_persona, args.get('intent', ''))
+            elif fn == "analyze_spending":
+                result = analyze_spending_tool(args.get('cid') or cid, args.get('months', 6))
             elif fn == "get_details":
                 result = get_details(args.get('pids', []))
             elif fn == "search_info":
