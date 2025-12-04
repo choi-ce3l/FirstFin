@@ -765,6 +765,7 @@ def run_rule_engine(profile_name, intent, card_df, dep_df):
     유효하지 않은 페르소나면 빈 리스트를 반환한다.
 
     [문제2 해결] 구체적인 추천 이유를 함께 제공한다.
+    [버그수정] card_category가 없을 때 product_name, benefits 등 다른 컬럼으로 검색
     """
     normalized_profile = normalize_persona_name(profile_name)
 
@@ -772,144 +773,134 @@ def run_rule_engine(profile_name, intent, card_df, dep_df):
         logger.warning(f"룰 엔진: 페르소나 '{profile_name}'을 찾을 수 없습니다.")
         return []
 
+    logger.info(f"룰 엔진 실행: 페르소나={normalized_profile}, 의도={intent}")
+    logger.info(f"카드 데이터: {len(card_df)}개, 컬럼: {list(card_df.columns) if len(card_df) > 0 else 'empty'}")
+
     # 페르소나별, 의도별 추천 규칙 + 구체적 추천 이유
     RULES = {
         '실속 스타터': {
             'default': {
-                'card': ['청년', '교통', '통신'],
-                'deposit': ['적금', '청년'],
+                'card': ['청년', '교통', '통신', '생활', '캐시백'],
+                'deposit': ['적금', '청년', '자유'],
                 'card_reasons': {
                     '청년': '사회초년생 전용 혜택으로 연회비 부담 없이 시작할 수 있어요',
                     '교통': '출퇴근 교통비 10% 할인, 월 10만원 사용 시 연 12만원 절약 가능',
-                    '통신': '통신비 자동이체 할인으로 월 2-3천원 추가 절약'
+                    '통신': '통신비 자동이체 할인으로 월 2-3천원 추가 절약',
+                    '생활': '생활 전반에 걸친 할인 혜택',
+                    '캐시백': '소비 시 캐시백으로 절약'
                 },
                 'deposit_reasons': {
                     '적금': '매월 꾸준히 저축하는 습관 형성 + 목돈 마련의 첫걸음',
-                    '청년': '청년 우대금리 적용으로 일반 상품 대비 최대 1%p 높은 금리'
+                    '청년': '청년 우대금리 적용으로 일반 상품 대비 최대 1%p 높은 금리',
+                    '자유': '자유롭게 입출금하며 저축 습관 형성'
                 }
             },
             '여행': {
-                'card': ['항공', '여행'],
-                'deposit': ['여행', '적금'],
+                'card': ['항공', '여행', '마일리지', '해외'],
+                'deposit': ['여행', '적금', '자유'],
                 'card_reasons': {
                     '항공': '마일리지 적립으로 연 1-2회 여행 시 항공권 할인 혜택',
-                    '여행': '해외 결제 수수료 면제 + 여행자 보험 무료 제공'
+                    '여행': '해외 결제 수수료 면제 + 여행자 보험 무료 제공',
+                    '마일리지': '마일리지로 항공권 구매 가능',
+                    '해외': '해외 결제 시 추가 혜택'
                 },
                 'deposit_reasons': {
                     '여행': '목표 금액 설정으로 여행 자금 체계적 마련',
-                    '적금': '여행 목표와 저축 습관을 동시에 잡는 일석이조'
-                }
-            },
-            '저축': {
-                'card': ['캐시백'],
-                'deposit': ['적금', '정기'],
-                'card_reasons': {
-                    '캐시백': '소비할 때마다 캐시백 적립, 이를 적금으로 자동 연결 가능'
-                },
-                'deposit_reasons': {
-                    '적금': '월 50만원씩 1년이면 600만원 + 이자, 첫 목돈의 시작',
-                    '정기': '확정 금리로 안정적인 수익 보장'
+                    '적금': '여행 목표와 저축 습관을 동시에 잡는 일석이조',
+                    '자유': '여행 자금 유연하게 관리'
                 }
             }
         },
         '스마트 플렉서': {
             'default': {
-                'card': ['프리미엄', '여행', '쇼핑'],
-                'deposit': ['고금리', '예금'],
+                'card': ['프리미엄', '여행', '쇼핑', '항공', '마일리지', '해외', 'VIP'],
+                'deposit': ['고금리', '예금', '자유'],
                 'card_reasons': {
                     '프리미엄': '라운지 이용, 발렛파킹 등 프리미엄 서비스로 스마트한 소비',
                     '여행': '해외 결제 1.5% 적립, 연 2회 여행 시 10만원 이상 혜택',
-                    '쇼핑': '백화점/명품 5% 할인으로 100만원 쇼핑 시 5만원 절약'
+                    '쇼핑': '백화점/명품 5% 할인으로 100만원 쇼핑 시 5만원 절약',
+                    '항공': '마일리지 2배 적립으로 연 1회 무료 항공권 가능',
+                    '마일리지': '마일리지 적립으로 여행 경비 절약',
+                    '해외': '해외 결제 시 수수료 면제',
+                    'VIP': 'VIP 전용 혜택 제공'
                 },
                 'deposit_reasons': {
                     '고금리': '높은 금리로 여유 자금 불리기, 다음 여행 자금 마련',
-                    '예금': '목돈을 안전하게 굴리면서 여행 계획 세우기'
+                    '예금': '목돈을 안전하게 굴리면서 여행 계획 세우기',
+                    '자유': '유동적인 자금 관리'
                 }
             },
             '여행': {
-                'card': ['항공', 'VIP'],
-                'deposit': ['외화'],
+                'card': ['항공', 'VIP', '마일리지', '여행', '해외', '프리미엄'],
+                'deposit': ['외화', '예금', '자유'],
                 'card_reasons': {
                     '항공': '마일리지 2배 적립으로 연 1회 무료 항공권 가능',
-                    'VIP': '공항 라운지 무료 이용으로 여행의 품격 UP'
+                    'VIP': '공항 라운지 무료 이용으로 여행의 품격 UP',
+                    '마일리지': '마일리지로 항공권 구매 가능',
+                    '여행': '여행 관련 다양한 혜택',
+                    '해외': '해외 결제 수수료 면제',
+                    '프리미엄': '프리미엄 여행 서비스'
                 },
                 'deposit_reasons': {
-                    '외화': '환율 유리할 때 미리 환전, 여행 경비 절약'
-                }
-            },
-            '쇼핑': {
-                'card': ['쇼핑', '백화점'],
-                'deposit': ['자유'],
-                'card_reasons': {
-                    '쇼핑': '온라인 쇼핑 5% 할인 + 무이자 할부 혜택',
-                    '백화점': '백화점 VIP 등급 연계 추가 할인'
-                },
-                'deposit_reasons': {
-                    '자유': '입출금 자유로워서 쇼핑 자금 유동적 관리'
+                    '외화': '환율 유리할 때 미리 환전, 여행 경비 절약',
+                    '예금': '여행 자금 안전하게 보관',
+                    '자유': '여행 일정에 맞게 유연하게 인출'
                 }
             }
         },
         '알뜰 지킴이': {
             'default': {
-                'card': ['캐시백', '마트', '생활'],
-                'deposit': ['적금', '예금'],
+                'card': ['캐시백', '마트', '생활', '할인', '적립', '통신'],
+                'deposit': ['적금', '예금', '자유'],
                 'card_reasons': {
                     '캐시백': '모든 소비에서 캐시백, 티끌 모아 태산 전략',
                     '마트': '대형마트 5% 할인, 월 20만원 장보기 시 연 12만원 절약',
-                    '생활': '공과금/통신비 할인으로 고정비 절감'
+                    '생활': '공과금/통신비 할인으로 고정비 절감',
+                    '할인': '다양한 할인 혜택',
+                    '적립': '포인트 적립으로 추가 혜택',
+                    '통신': '통신비 할인'
                 },
                 'deposit_reasons': {
                     '적금': '절약한 금액을 적금으로 자동 이체, 저축 습관화',
-                    '예금': '비상금 통장으로 안전하게 보관'
-                }
-            },
-            '저축': {
-                'card': ['적립'],
-                'deposit': ['정기적금'],
-                'card_reasons': {
-                    '적립': '포인트 적립 후 현금 전환, 추가 저축 재원 마련'
-                },
-                'deposit_reasons': {
-                    '정기적금': '매월 정해진 금액 자동이체로 강제 저축 효과'
+                    '예금': '비상금 통장으로 안전하게 보관',
+                    '자유': '필요할 때 유연하게 사용'
                 }
             }
         },
         '디지털 힙스터': {
             'default': {
-                'card': ['온라인', '쇼핑', '구독'],
-                'deposit': ['모바일', '입출금'],
+                'card': ['온라인', '쇼핑', '구독', '디지털', '간편결제', '페이'],
+                'deposit': ['모바일', '입출금', '자유'],
                 'card_reasons': {
                     '온라인': '온라인 쇼핑 7% 할인, 월 15만원 사용 시 연 12.6만원 절약',
                     '쇼핑': '간편결제 추가 적립으로 포인트 이중 혜택',
-                    '구독': '넷플릭스/유튜브 등 구독료 10% 할인'
+                    '구독': '넷플릭스/유튜브 등 구독료 10% 할인',
+                    '디지털': '디지털 서비스 할인',
+                    '간편결제': '간편결제 추가 적립',
+                    '페이': '페이 결제 시 추가 혜택'
                 },
                 'deposit_reasons': {
                     '모바일': '앱으로 간편하게 관리, 실시간 알림으로 소비 패턴 확인',
-                    '입출금': '수시 입출금으로 유연한 자금 관리'
-                }
-            },
-            '구독': {
-                'card': ['스트리밍'],
-                'deposit': ['자유'],
-                'card_reasons': {
-                    '스트리밍': 'OTT 구독료 15% 할인, 월 3만원 구독 시 연 5.4만원 절약'
-                },
-                'deposit_reasons': {
-                    '자유': '구독료 자동이체 + 나머지 금액 저축 자동화'
+                    '입출금': '수시 입출금으로 유연한 자금 관리',
+                    '자유': '자유로운 입출금'
                 }
             }
         },
         '밸런스 메인스트림': {
             'default': {
-                'card': ['일상', '생활'],
-                'deposit': ['예금', '자유'],
+                'card': ['일상', '생활', '캐시백', '할인', '적립'],
+                'deposit': ['예금', '자유', '입출금'],
                 'card_reasons': {
                     '일상': '전 가맹점 1% 적립, 복잡한 조건 없이 심플하게',
-                    '생활': '점심값+커피값 월 30만원 사용 시 연 3.6만원 적립'
+                    '생활': '점심값+커피값 월 30만원 사용 시 연 3.6만원 적립',
+                    '캐시백': '다양한 캐시백 혜택',
+                    '할인': '전반적인 할인 혜택',
+                    '적립': '포인트 적립'
                 },
                 'deposit_reasons': {
                     '예금': '연회비 없이 안정적인 이자 수익',
-                    '자유': '필요할 때 언제든 출금 가능한 유연성'
+                    '자유': '필요할 때 언제든 출금 가능한 유연성',
+                    '입출금': '자유로운 입출금'
                 }
             }
         }
@@ -917,10 +908,10 @@ def run_rule_engine(profile_name, intent, card_df, dep_df):
 
     # 의도 감지
     intent_map = {
-        '여행': ['여행', '해외', '항공'],
-        '저축': ['저축', '적금', '목돈'],
-        '쇼핑': ['쇼핑', '백화점'],
-        '구독': ['구독', '넷플릭스']
+        '여행': ['여행', '해외', '항공', '비행기', '휴가', '마일리지'],
+        '저축': ['저축', '적금', '목돈', '모으', '절약'],
+        '쇼핑': ['쇼핑', '백화점', '구매', '온라인'],
+        '구독': ['구독', '넷플릭스', 'OTT', '스트리밍']
     }
     detected_intent = 'default'
     intent_lower = intent.lower() if intent else ''
@@ -929,52 +920,121 @@ def run_rule_engine(profile_name, intent, card_df, dep_df):
             detected_intent = key
             break
 
+    logger.info(f"감지된 의도: {detected_intent}")
+
     profile_rules = RULES.get(normalized_profile)
     if profile_rules is None:
         logger.warning(f"룰 엔진: '{normalized_profile}' 페르소나에 대한 규칙이 없습니다.")
         return []
 
     rule = profile_rules.get(detected_intent, profile_rules.get('default', {}))
-
-    # 추천 이유 딕셔너리 가져오기
     card_reasons = rule.get('card_reasons', {})
     deposit_reasons = rule.get('deposit_reasons', {})
 
     results = []
 
-    # 카드 추천 + 구체적 이유
-    if len(card_df) > 0 and 'card_category' in card_df.columns:
+    # [버그수정] 카드 추천 - 여러 컬럼에서 검색
+    if len(card_df) > 0:
+        # 검색할 컬럼 목록
+        search_columns = [col for col in ['card_category', 'product_name', 'benefits', 'description']
+                          if col in card_df.columns]
+
+        if not search_columns:
+            search_columns = [card_df.columns[1]] if len(card_df.columns) > 1 else []
+
+        logger.info(f"카드 검색 컬럼: {search_columns}")
+
+        found_cards = set()
         for kw in rule.get('card', []):
-            matches = card_df[card_df['card_category'].str.contains(kw, case=False, na=False)]
-            for _, r in matches.head(1).iterrows():
-                specific_reason = card_reasons.get(kw, f"'{kw}' 관련 혜택 제공")
+            if len(found_cards) >= 3:
+                break
+            for col in search_columns:
+                try:
+                    matches = card_df[card_df[col].astype(str).str.contains(kw, case=False, na=False)]
+                    for _, r in matches.head(1).iterrows():
+                        pid = r.get('product_id', '')
+                        if pid and pid not in found_cards:
+                            found_cards.add(pid)
+                            specific_reason = card_reasons.get(kw, f"'{kw}' 관련 혜택 제공")
+                            results.append({
+                                'product_id': pid,
+                                'product_name': r.get('product_name', ''),
+                                'reason': specific_reason,
+                                'keyword': kw,
+                                'persona_fit': f"{normalized_profile} 성향에 적합",
+                                'source': 'rule'
+                            })
+                            logger.info(f"카드 매칭: {kw} -> {r.get('product_name', '')}")
+                            break
+                except Exception as e:
+                    logger.warning(f"카드 검색 오류: {e}")
+
+        # 매칭 실패 시 상위 카드 추천
+        if len(found_cards) == 0 and len(card_df) > 0:
+            logger.info("키워드 매칭 실패, 상위 카드 추천")
+            for _, r in card_df.head(2).iterrows():
                 results.append({
-                    'product_id': r['product_id'],
-                    'product_name': r['product_name'],
-                    'reason': specific_reason,
-                    'keyword': kw,
+                    'product_id': r.get('product_id', ''),
+                    'product_name': r.get('product_name', ''),
+                    'reason': f"{normalized_profile} 페르소나 추천 카드",
+                    'keyword': 'default',
                     'persona_fit': f"{normalized_profile} 성향에 적합",
                     'source': 'rule'
                 })
 
-    # 예금 추천 + 구체적 이유
-    if len(dep_df) > 0 and 'product_name' in dep_df.columns:
+    # 예금 추천
+    if len(dep_df) > 0:
+        search_columns = [col for col in ['product_name', 'description'] if col in dep_df.columns]
+        if not search_columns and len(dep_df.columns) > 0:
+            search_columns = [dep_df.columns[0]]
+
+        found_deps = set()
         for kw in rule.get('deposit', []):
-            matches = dep_df[dep_df['product_name'].str.contains(kw, case=False, na=False)]
-            for _, r in matches.head(1).iterrows():
-                specific_reason = deposit_reasons.get(kw, f"'{kw}' 관련 상품")
+            if len(found_deps) >= 2:
+                break
+            for col in search_columns:
+                try:
+                    matches = dep_df[dep_df[col].astype(str).str.contains(kw, case=False, na=False)]
+                    for _, r in matches.head(1).iterrows():
+                        pid = r.get('product_id', '')
+                        if pid and pid not in found_deps:
+                            found_deps.add(pid)
+                            specific_reason = deposit_reasons.get(kw, f"'{kw}' 관련 상품")
+                            results.append({
+                                'product_id': pid,
+                                'product_name': r.get('product_name', ''),
+                                'reason': specific_reason,
+                                'keyword': kw,
+                                'persona_fit': f"{normalized_profile} 성향에 적합",
+                                'source': 'rule'
+                            })
+                            break
+                except Exception as e:
+                    logger.warning(f"예금 검색 오류: {e}")
+
+        # 매칭 실패 시 상위 예금 추천
+        if len(found_deps) == 0 and len(dep_df) > 0:
+            for _, r in dep_df.head(1).iterrows():
                 results.append({
-                    'product_id': r['product_id'],
-                    'product_name': r['product_name'],
-                    'reason': specific_reason,
-                    'keyword': kw,
+                    'product_id': r.get('product_id', ''),
+                    'product_name': r.get('product_name', ''),
+                    'reason': f"{normalized_profile} 페르소나 추천 예금",
+                    'keyword': 'default',
                     'persona_fit': f"{normalized_profile} 성향에 적합",
                     'source': 'rule'
                 })
 
     # 중복 제거
     seen = set()
-    return [r for r in results if not (r['product_id'] in seen or seen.add(r['product_id']))][:5]
+    unique_results = []
+    for r in results:
+        pid = r.get('product_id', '')
+        if pid and pid not in seen:
+            seen.add(pid)
+            unique_results.append(r)
+
+    logger.info(f"최종 추천: {len(unique_results)}개")
+    return unique_results[:5]
 
 
 # -----------------------------------------
@@ -992,27 +1052,57 @@ class SpendingAnalyzer:
 
     # 카테고리별 권장 지출 비율 (월 소득 대비)
     RECOMMENDED_RATIOS = {
-        '식비': 0.15,  # 15%
-        '교통': 0.10,  # 10%
-        '통신': 0.05,  # 5%
-        '쇼핑': 0.10,  # 10%
-        '여가/문화': 0.10,  # 10%
-        '배달': 0.05,  # 5%
-        '카페/음료': 0.03,  # 3%
-        '편의점': 0.03,  # 3%
-        '구독서비스': 0.03,  # 3%
-        '기타': 0.10  # 10%
+        '식비': 0.15,
+        '교통': 0.10,
+        '통신': 0.05,
+        '쇼핑': 0.10,
+        '여가/문화': 0.10,
+        '배달': 0.05,
+        '카페/음료': 0.03,
+        '편의점': 0.03,
+        '구독서비스': 0.03,
+        '기타': 0.10
+    }
+
+    # [수정] 필수 지출 vs 선택적 지출 구분
+    # 필수 지출: 줄이기 어려운 고정비
+    ESSENTIAL_CATEGORIES = {'교통', '통신', '공과금', '보험', '주거', '의료'}
+
+    # 선택적 지출: 절약 가능한 변동비
+    DISCRETIONARY_CATEGORIES = {'배달', '카페/음료', '편의점', '쇼핑', '여가/문화', '구독서비스', '외식'}
+
+    # 카테고리별 절약 난이도 (0: 불가능, 1: 어려움, 2: 보통, 3: 쉬움)
+    SAVING_DIFFICULTY = {
+        '교통': 0,  # 출퇴근 필수
+        '통신': 1,  # 요금제 변경 가능하나 제한적
+        '공과금': 0,  # 필수
+        '보험': 0,  # 필수
+        '주거': 0,  # 고정비
+        '의료': 0,  # 필수
+        '배달': 3,  # 쉽게 줄일 수 있음
+        '카페/음료': 3,  # 쉽게 줄일 수 있음
+        '편의점': 2,  # 줄일 수 있음
+        '쇼핑': 2,  # 줄일 수 있음
+        '여가/문화': 2,  # 줄일 수 있음
+        '구독서비스': 3,  # 쉽게 줄일 수 있음
+        '외식': 2,  # 줄일 수 있음
+        '식비': 1,  # 필요하지만 조절 가능
+        '기타': 1
     }
 
     # 카테고리 매핑 (원본 데이터 -> 통합 카테고리)
     CATEGORY_MAPPING = {
-        '식당/카페': '식비',
+        '식당/카페': '외식',
         '카페': '카페/음료',
         '스타벅스': '카페/음료',
+        '커피': '카페/음료',
         '편의점': '편의점',
         '마트': '식비',
         '배달': '배달',
         '배달앱': '배달',
+        '요기요': '배달',
+        '배민': '배달',
+        '쿠팡이츠': '배달',
         '교통': '교통',
         '대중교통': '교통',
         '택시': '교통',
@@ -1023,6 +1113,8 @@ class SpendingAnalyzer:
         '통신': '통신',
         '구독': '구독서비스',
         'OTT': '구독서비스',
+        '넷플릭스': '구독서비스',
+        '유튜브': '구독서비스',
         '여가': '여가/문화',
         '문화': '여가/문화',
         '영화': '여가/문화',
@@ -1122,53 +1214,123 @@ class SpendingAnalyzer:
 
     def _analyze_by_category(self, trans, monthly_avg, income):
         """카테고리별 지출 분석 및 과소비 감지."""
-        if 'unified_category' not in trans.columns:
-            return {"status": "카테고리 정보 없음"}
+        # [버그수정] unified_category가 없으면 merchant_category나 다른 컬럼 사용
+        category_col = None
+        if 'unified_category' in trans.columns:
+            category_col = 'unified_category'
+        elif 'merchant_category' in trans.columns:
+            category_col = 'merchant_category'
+        elif 'category' in trans.columns:
+            category_col = 'category'
 
-        # 월 기준으로 환산
+        if category_col is None:
+            logger.warning("카테고리 컬럼이 없어서 기본 분석 수행")
+            total_monthly = monthly_avg
+            return {
+                "details": [{
+                    "category": "전체 소비",
+                    "monthly_amount": round(total_monthly),
+                    "monthly_count": len(trans) / max(1, (
+                                trans['transaction_date'].max() - trans['transaction_date'].min()).days / 30),
+                    "recommended": round(income * 0.7),
+                    "actual_ratio": round(total_monthly / income * 100, 1),
+                    "recommended_ratio": 70,
+                    "status": "주의" if total_monthly > income * 0.7 else "적정",
+                    "is_essential": False
+                }],
+                "overspending": [{
+                    "category": "전체 소비",
+                    "monthly_amount": round(total_monthly),
+                    "recommended": round(income * 0.7),
+                    "excess": round(max(0, total_monthly - income * 0.7)),
+                    "ratio": round(total_monthly / income * 100, 1),
+                    "saving_difficulty": 2
+                }] if total_monthly > income * 0.5 else [],
+                "overspending_total": round(max(0, total_monthly - income * 0.7)) if total_monthly > income * 0.5 else 0
+            }
+
         months = max(1, (trans['transaction_date'].max() - trans['transaction_date'].min()).days / 30)
 
-        category_spending = trans.groupby('unified_category')['amount'].sum() / months
-        category_counts = trans.groupby('unified_category').size() / months
+        category_spending = trans.groupby(category_col)['amount'].sum() / months
+        category_counts = trans.groupby(category_col).size() / months
 
         results = []
         overspending_categories = []
 
         for cat, amount in category_spending.items():
-            recommended_ratio = self.RECOMMENDED_RATIOS.get(cat, 0.05)
+            unified_cat = self._map_category(cat) if category_col != 'unified_category' else cat
+            recommended_ratio = self.RECOMMENDED_RATIOS.get(unified_cat, 0.05)
             recommended_amount = income * recommended_ratio
             actual_ratio = amount / income
 
+            # [핵심 수정] 필수 지출인지 확인
+            is_essential = unified_cat in self.ESSENTIAL_CATEGORIES
+            saving_difficulty = self.SAVING_DIFFICULTY.get(unified_cat, 1)
+
             status = "적정"
-            if actual_ratio > recommended_ratio * 1.5:
-                status = "과소비"
-                overspending_categories.append({
-                    "category": cat,
-                    "monthly_amount": round(amount),
-                    "recommended": round(recommended_amount),
-                    "excess": round(amount - recommended_amount),
-                    "ratio": round(actual_ratio * 100, 1)
-                })
-            elif actual_ratio > recommended_ratio * 1.2:
-                status = "주의"
+
+            # [핵심 수정] 필수 지출이 아닌 경우에만 과소비 판단
+            if not is_essential and saving_difficulty >= 2:
+                if actual_ratio > recommended_ratio * 1.2 or amount > recommended_amount + 30000:
+                    status = "과소비"
+                    overspending_categories.append({
+                        "category": unified_cat,
+                        "monthly_amount": round(amount),
+                        "recommended": round(recommended_amount),
+                        "excess": round(amount - recommended_amount),
+                        "ratio": round(actual_ratio * 100, 1),
+                        "saving_difficulty": saving_difficulty
+                    })
+                elif actual_ratio > recommended_ratio * 1.0 or amount > recommended_amount:
+                    status = "주의"
+                    overspending_categories.append({
+                        "category": unified_cat,
+                        "monthly_amount": round(amount),
+                        "recommended": round(recommended_amount),
+                        "excess": round(max(0, amount - recommended_amount)),
+                        "ratio": round(actual_ratio * 100, 1),
+                        "saving_difficulty": saving_difficulty
+                    })
+            elif is_essential:
+                status = "필수"
 
             results.append({
-                "category": cat,
+                "category": unified_cat,
                 "monthly_amount": round(amount),
                 "monthly_count": round(category_counts.get(cat, 0), 1),
                 "recommended": round(recommended_amount),
                 "actual_ratio": round(actual_ratio * 100, 1),
                 "recommended_ratio": round(recommended_ratio * 100, 1),
-                "status": status
+                "status": status,
+                "is_essential": is_essential,
+                "saving_difficulty": saving_difficulty
             })
 
-        # 금액 순으로 정렬
         results.sort(key=lambda x: x['monthly_amount'], reverse=True)
+
+        # [수정] 절약 난이도 높은 순으로 정렬 (쉬운 것부터)
+        overspending_categories.sort(key=lambda x: (-x['saving_difficulty'], -x['excess']))
+
+        # [수정] 선택적 지출에서만 절약 가능 항목 추출
+        if len(overspending_categories) == 0:
+            for item in results:
+                if not item['is_essential'] and item['saving_difficulty'] >= 2 and item['monthly_amount'] > 0:
+                    potential_saving = round(item['monthly_amount'] * 0.2)
+                    overspending_categories.append({
+                        "category": item['category'],
+                        "monthly_amount": item['monthly_amount'],
+                        "recommended": item['recommended'],
+                        "excess": potential_saving,
+                        "ratio": item['actual_ratio'],
+                        "saving_difficulty": item['saving_difficulty']
+                    })
+                    if len(overspending_categories) >= 3:
+                        break
 
         return {
             "details": results,
-            "overspending": overspending_categories,
-            "overspending_total": sum(item['excess'] for item in overspending_categories)
+            "overspending": overspending_categories[:5],
+            "overspending_total": sum(item['excess'] for item in overspending_categories[:5])
         }
 
     def _analyze_by_time(self, trans):
@@ -1279,72 +1441,102 @@ class HabitCoach:
     """
     소비 습관 교정 조언을 생성하는 클래스.
     SpendingAnalyzer의 분석 결과를 바탕으로 구체적인 절약 방안과 목표를 제시한다.
+
+    [핵심 원칙]
+    - 필수 지출(교통, 통신, 공과금)은 절약 대상에서 제외
+    - 선택적 지출(배달, 카페, 구독)만 절약 대상으로 제안
     """
 
-    # 카테고리별 절약 팁
+    # [수정] 선택적 지출에 대한 절약 팁만 제공
     SAVING_TIPS = {
         '배달': {
             'tips': [
-                "주 3회 배달을 2회로 줄이면 월 4-5만원 절약",
-                "배달 대신 편의점 도시락 활용 (1회당 5천원 절약)",
+                "주 3회 배달을 1회로 줄이면 월 4-6만원 절약",
+                "배달 대신 직접 픽업하면 배달비 2-3천원 절약",
                 "배달앱 알림 끄기로 충동 주문 방지",
-                "직접 픽업 시 할인 혜택 활용"
+                "주말에만 배달 허용하는 규칙 만들기"
             ],
-            'saving_potential': 0.3  # 30% 절약 가능
+            'saving_potential': 0.4,  # 40% 절약 가능
+            'is_discretionary': True
         },
         '카페/음료': {
             'tips': [
                 "텀블러 지참 시 300-500원 할인",
                 "사무실 커피머신 활용으로 1잔당 3천원 절약",
-                "주 5회를 3회로 줄이면 월 2-3만원 절약",
-                "구독권/스탬프 활용으로 무료 음료 적립"
+                "주 5회를 2회로 줄이면 월 3-4만원 절약",
+                "집에서 커피 내려 마시기"
             ],
-            'saving_potential': 0.4
+            'saving_potential': 0.5,
+            'is_discretionary': True
         },
         '편의점': {
             'tips': [
                 "1+1, 2+1 행사 상품 위주로 구매",
-                "도시락은 마감 할인 시간대 활용",
-                "편의점 대신 대형마트 소포장 활용",
-                "충동구매 방지: 필요한 것만 메모 후 방문"
+                "마트에서 미리 간식 구매해두기",
+                "충동구매 방지: 필요한 것만 메모 후 방문",
+                "편의점 대신 마트 소포장 활용"
             ],
-            'saving_potential': 0.25
+            'saving_potential': 0.3,
+            'is_discretionary': True
         },
         '구독서비스': {
             'tips': [
                 "사용하지 않는 구독 서비스 정리 (월 1-2만원 절약)",
-                "가족/친구와 공유 계정 활용",
+                "가족/친구와 공유 계정 활용 (비용 50% 절감)",
                 "연간 결제로 할인 혜택 받기",
-                "무료 체험 기간 활용 후 결정"
+                "무료 체험만 사용하고 해지하기"
             ],
-            'saving_potential': 0.5
+            'saving_potential': 0.6,
+            'is_discretionary': True
         },
         '쇼핑': {
             'tips': [
                 "장바구니 담기 후 24시간 대기 규칙",
-                "세일 기간 집중 구매로 20-30% 절약",
+                "세일 기간에만 구매하기",
                 "위시리스트 작성 후 우선순위 구매",
                 "중고거래 플랫폼 활용"
             ],
-            'saving_potential': 0.3
-        },
-        '교통': {
-            'tips': [
-                "정기권 구매로 월 10-15% 절약",
-                "자전거/도보 출퇴근 가능 거리 활용",
-                "카풀 서비스 활용",
-                "택시 대신 대중교통 (1회당 1-2만원 절약)"
-            ],
-            'saving_potential': 0.15
+            'saving_potential': 0.35,
+            'is_discretionary': True
         },
         '여가/문화': {
             'tips': [
-                "조조/심야 할인 영화 관람",
+                "조조/심야 할인 영화 관람 (50% 절약)",
                 "문화누리카드/청년 할인 활용",
-                "무료 문화행사/전시회 활용",
-                "스트리밍 서비스로 대체"
+                "무료 문화행사/전시회 참여",
+                "OTT로 영화관 대체"
             ],
-            'saving_potential': 0.25
+            'saving_potential': 0.3,
+            'is_discretionary': True
+        },
+        '외식': {
+            'tips': [
+                "외식 횟수 주 3회 → 1회로 줄이기",
+                "점심은 도시락, 저녁만 외식",
+                "외식 대신 밀키트 활용",
+                "할인 앱/쿠폰 적극 활용"
+            ],
+            'saving_potential': 0.35,
+            'is_discretionary': True
+        },
+        # 필수 지출은 절약 팁 없음 (제외)
+        '교통': {
+            'tips': [],
+            'saving_potential': 0,
+            'is_discretionary': False
+        },
+        '통신': {
+            'tips': [],
+            'saving_potential': 0,
+            'is_discretionary': False
+        },
+        '식비': {
+            'tips': [
+                "장보기 전 냉장고 확인하기",
+                "주간 식단 계획 세우기"
+            ],
+            'saving_potential': 0.1,  # 필수라 절약 여지 적음
+            'is_discretionary': False
         }
     }
 
@@ -1426,34 +1618,99 @@ class HabitCoach:
         }
 
     def _calculate_saving_opportunities(self, analysis):
-        """카테고리별 절약 가능 금액을 계산한다."""
+        """
+        카테고리별 절약 가능 금액을 계산한다.
+        [핵심] 필수 지출(교통, 통신 등)은 제외하고 선택적 지출만 대상으로 함.
+        """
         opportunities = []
         total_potential = 0
 
         category_data = analysis.get('category_analysis', {})
         overspending = category_data.get('overspending', [])
+        details = category_data.get('details', [])
 
-        for item in overspending:
-            cat = item['category']
-            tips_info = self.SAVING_TIPS.get(cat, {'tips': [], 'saving_potential': 0.2})
+        # [핵심 수정] 선택적 지출만 필터링
+        discretionary_spending = [
+            item for item in overspending
+            if self.SAVING_TIPS.get(item['category'], {}).get('is_discretionary', True)
+               and item.get('saving_difficulty', 2) >= 2
+        ]
 
-            potential_saving = round(item['excess'] * tips_info['saving_potential'])
-            total_potential += potential_saving
+        if discretionary_spending:
+            for item in discretionary_spending:
+                cat = item['category']
+                tips_info = self.SAVING_TIPS.get(cat, {'tips': ['지출 줄이기'], 'saving_potential': 0.2,
+                                                       'is_discretionary': True})
 
-            opportunities.append({
-                "category": cat,
-                "current_monthly": item['monthly_amount'],
-                "excess_amount": item['excess'],
-                "potential_saving": potential_saving,
-                "saving_tips": tips_info['tips'][:2],  # 상위 2개 팁만
-                "difficulty": "쉬움" if tips_info['saving_potential'] >= 0.3 else "보통"
-            })
+                # 필수 지출은 건너뛰기
+                if not tips_info.get('is_discretionary', True):
+                    continue
+
+                excess = item.get('excess', 0)
+                if excess <= 0:
+                    excess = item['monthly_amount'] * 0.2
+
+                potential_saving = round(excess * tips_info['saving_potential'])
+                if potential_saving < 5000:
+                    potential_saving = round(item['monthly_amount'] * tips_info['saving_potential'] * 0.5)
+
+                total_potential += potential_saving
+
+                opportunities.append({
+                    "category": cat,
+                    "current_monthly": item['monthly_amount'],
+                    "excess_amount": round(excess),
+                    "potential_saving": potential_saving,
+                    "saving_tips": tips_info['tips'][:2] if tips_info['tips'] else ['지출 줄이기'],
+                    "difficulty": "쉬움" if tips_info['saving_potential'] >= 0.35 else "보통"
+                })
+
+        # [수정] 선택적 지출에서만 추가 기회 찾기
+        if len(opportunities) < 3 and details:
+            for item in details:
+                if len(opportunities) >= 3:
+                    break
+                cat = item['category']
+
+                # 이미 추가된 카테고리는 건너뛰기
+                if any(o['category'] == cat for o in opportunities):
+                    continue
+
+                # 필수 지출은 건너뛰기
+                if item.get('is_essential', False):
+                    continue
+
+                tips_info = self.SAVING_TIPS.get(cat, {'tips': [], 'saving_potential': 0.2, 'is_discretionary': True})
+                if not tips_info.get('is_discretionary', True) or not tips_info['tips']:
+                    continue
+
+                if item['monthly_amount'] > 0:
+                    potential_saving = round(item['monthly_amount'] * tips_info['saving_potential'] * 0.5)
+                    if potential_saving >= 5000:  # 최소 5천원 이상만
+                        total_potential += potential_saving
+                        opportunities.append({
+                            "category": cat,
+                            "current_monthly": item['monthly_amount'],
+                            "excess_amount": potential_saving,
+                            "potential_saving": potential_saving,
+                            "saving_tips": tips_info['tips'][:2],
+                            "difficulty": "보통"
+                        })
+
+        # [수정] 그래도 없으면 메시지만 반환 (교통비 같은 필수 지출만 있는 경우)
+        if len(opportunities) == 0:
+            return {
+                "details": [],
+                "total_potential": 0,
+                "top_3_categories": [],
+                "message": "현재 소비 패턴에서 줄일 수 있는 선택적 지출이 적습니다. 배달, 카페, 구독 서비스 등을 이용 중이시라면 해당 내역을 확인해보세요."
+            }
 
         # 절약 효과가 큰 순으로 정렬
         opportunities.sort(key=lambda x: x['potential_saving'], reverse=True)
 
         return {
-            "details": opportunities,
+            "details": opportunities[:5],
             "total_potential": total_potential,
             "top_3_categories": [o['category'] for o in opportunities[:3]]
         }
@@ -1462,56 +1719,77 @@ class HabitCoach:
         """구체적인 주간/월간 실천 계획을 생성한다."""
         actions = []
 
-        # 과소비 카테고리별 행동 계획
-        for opp in saving_opportunities['details'][:3]:
+        # [수정] 선택적 지출 카테고리만 행동 계획에 포함
+        for opp in saving_opportunities.get('details', [])[:3]:
             cat = opp['category']
+            weekly_action = self._get_weekly_action(cat, opp['current_monthly'])
+
+            # 필수 지출이면 건너뛰기
+            if weekly_action is None:
+                continue
+
             actions.append({
                 "category": cat,
-                "weekly_action": self._get_weekly_action(cat, opp['current_monthly']),
-                "monthly_goal": f"{cat} 지출 {opp['potential_saving']:,}원 줄이기",
+                "weekly_action": weekly_action,
+                "monthly_goal": f"{cat} 지출에서 월 {opp['potential_saving']:,}원 절약하기",
                 "tracking_method": f"매주 {cat} 지출 내역 확인하기"
             })
 
-        # 시간대별 조언
+        # 시간대별 조언 (선택적)
         time_analysis = analysis.get('time_analysis', {})
         if time_analysis.get('late_night_warning'):
             actions.append({
-                "category": "심야 소비",
-                "weekly_action": "밤 11시 이후 결제 앱 알림 끄기",
-                "monthly_goal": f"심야 소비 {time_analysis['late_night_ratio']}% → 5% 이하로",
-                "tracking_method": "심야 거래 내역 주간 점검"
+                "category": "심야 충동소비",
+                "weekly_action": "밤 11시 이후에는 쇼핑앱/배달앱 열지 않기",
+                "monthly_goal": f"심야 소비 비율 {time_analysis['late_night_ratio']:.0f}% → 5% 이하로",
+                "tracking_method": "심야 결제 내역 주간 점검"
             })
 
-        # 월급날 패턴 조언
+        # 월급날 패턴 조언 (선택적)
         payday = analysis.get('payday_analysis', {})
         if payday.get('payday_spike'):
             actions.append({
-                "category": "월급날 관리",
-                "weekly_action": "월급날 자동이체로 저축 먼저 빼기",
-                "monthly_goal": "월급 직후 3일간 지출 30% 줄이기",
-                "tracking_method": "월급 후 일주일 지출 별도 기록"
+                "category": "월급날 과소비 방지",
+                "weekly_action": "월급 받으면 먼저 저축 계좌로 자동이체",
+                "monthly_goal": "월급 직후 3일간 배달/쇼핑 금지",
+                "tracking_method": "월급 후 일주일 지출 따로 기록"
+            })
+
+        # [수정] 액션이 없으면 기본 조언 제공
+        if len(actions) == 0:
+            actions.append({
+                "category": "소비 습관",
+                "weekly_action": "매일 지출 내역 확인하고 기록하기",
+                "monthly_goal": "불필요한 지출 찾아서 줄이기",
+                "tracking_method": "가계부 앱으로 지출 추적"
             })
 
         return {
             "priority_actions": actions,
-            "automation_suggestion": "월급날 자동이체 설정: 저축 → 고정비 → 생활비 순서",
-            "review_schedule": "매주 일요일 저녁, 주간 소비 리뷰 시간 갖기"
+            "automation_suggestion": "월급날 자동이체 설정: 저축(20%) → 고정비(50%) → 생활비(30%) 순서",
+            "review_schedule": "매주 일요일 저녁, 10분간 주간 소비 리뷰"
         }
 
     def _get_weekly_action(self, category, monthly_amount):
         """카테고리별 주간 실천 행동을 반환한다."""
         weekly_amount = monthly_amount / 4
 
+        # [수정] 현실적이고 구체적인 실천 행동
         actions = {
-            '배달': f"이번 주 배달 {int(weekly_amount / 15000)}회 → {max(1, int(weekly_amount / 15000) - 1)}회로 줄이기",
-            '카페/음료': f"주 {int(weekly_amount / 5000)}잔 → {max(2, int(weekly_amount / 5000) - 2)}잔으로 줄이기",
-            '편의점': f"편의점 방문 시 5천원 이하만 지출하기",
-            '쇼핑': f"이번 주 쇼핑 예산 {int(weekly_amount * 0.7):,}원으로 제한",
+            '배달': f"이번 주 배달 1회만 허용하기 (예상 절약: {int(weekly_amount * 0.4):,}원)",
+            '카페/음료': f"이번 주 카페 2회만 가기, 나머지는 텀블러 커피",
+            '편의점': f"편의점 방문 전 꼭 필요한지 10초 생각하기",
+            '쇼핑': f"이번 주 쇼핑 금지 챌린지 (위시리스트에만 담기)",
             '구독서비스': "사용하지 않는 구독 1개 해지하기",
-            '여가/문화': f"무료 문화행사 1개 참여하기"
+            '여가/문화': f"무료 문화행사 1개 찾아서 참여하기",
+            '외식': f"이번 주 외식 1회로 제한, 나머지는 집밥"
         }
 
-        return actions.get(category, f"주간 {category} 예산 {int(weekly_amount * 0.8):,}원으로 관리")
+        # 필수 지출은 실천 계획 없음
+        if category in ['교통', '통신', '공과금', '보험']:
+            return None
+
+        return actions.get(category, f"이번 주 {category} 지출 점검하기")
 
     def _simulate_progress(self, monthly_target, monthly_saving, months):
         """목표 달성 진행 상황을 시뮬레이션한다."""
