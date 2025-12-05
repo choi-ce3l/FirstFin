@@ -472,10 +472,7 @@ def build_faiss_index(product_db, client):
 def normalize_persona_name(persona_with_suffix, fallback=None):
     """
     페르소나 이름에서 기본 페르소나를 추출한다.
-
-    [수정사항]
-    - 기존: 매칭 실패 시 무조건 '실속 스타터' 반환
-    - 변경: 매칭 실패 시 fallback 파라미터 사용, fallback도 None이면 None 반환
+    매칭 실패 시 fallback 파라미터 사용, fallback도 None이면 None 반환
 
     Args:
         persona_with_suffix: 접미사가 붙은 페르소나 이름 (예: "스마트 플렉서 (최근 소비 급증)")

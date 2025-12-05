@@ -40,9 +40,3 @@ time.sleep(4)
 # ----------------------------------------
 public_url = ngrok.connect(addr=port, proto="http").public_url
 print(f"\n🌐 친구에게 보낼 주소: {public_url}\n")
-
-'''
-사용 방법
-pkill -9 -f ngrok
-ngrok http 8502
-'''
