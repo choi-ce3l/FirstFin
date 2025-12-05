@@ -40,3 +40,9 @@ time.sleep(4)
 # ----------------------------------------
 public_url = ngrok.connect(addr=port, proto="http").public_url
 print(f"\n🌐 친구에게 보낼 주소: {public_url}\n")
+
+'''
+사용 방법: 터미널에 입력
+터미널 1: streamlit run app.py
+터미널 2: ngrok http 8502
+'''
